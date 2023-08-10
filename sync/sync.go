@@ -58,6 +58,7 @@ func SyncHandler() func(stream network.Stream) {
 				err = ev.Delete()
 				recvDispDeleted(ev.Path)
 			}
+			untilWritten(ev.Path)
 			time.AfterFunc(time.Second, func() { recvs.Remove(ev.Path) })
 			if err != nil {
 				log.Printf("%s error operate message from stream: %+v", peerID, err)
@@ -110,24 +111,14 @@ func SyncWatcher(h host.Host) {
 	go func() {
 		for {
 			ev := <-watchCh
+			untilWritten(ev.Path)
 
-			time.Sleep(100 * time.Millisecond)
-			size := fileSize(ev.Path)
-			if size > 1024*20 {
-				for {
-					if isWritten, _ := isFileWritten(ev.Path); !isWritten {
-						break
-					}
-					time.Sleep(100 * time.Millisecond)
-				}
-			}
-
-			relPath, relOldPath := paths(currDir, ev)
+			relPath, oldPath := paths(currDir, ev)
 			switch ev.Op {
 			case watcher.Move, watcher.Rename:
 				logFatal(notifyCopy(h, ev.Path, relPath))
 				sendDispChanged(relPath)
-				logFatal(notifyDelete(h, relOldPath))
+				logFatal(notifyDelete(h, oldPath))
 				sendDispDeleted(relPath)
 			case watcher.Create, watcher.Write:
 				logFatal(notifyCopy(h, ev.Path, relPath))
@@ -142,6 +133,9 @@ func SyncWatcher(h host.Host) {
 	}()
 
 	if err := w.AddRecursive("./"); err != nil {
+		log.Fatalln(err)
+	}
+	if err := w.Ignore(".git"); err != nil {
 		log.Fatalln(err)
 	}
 	if err := w.Start(time.Millisecond * 300); err != nil {

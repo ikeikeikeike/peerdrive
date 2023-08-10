@@ -45,6 +45,19 @@ func isFileWritten(path string) (bool, int64) {
 	return mtime1 != mtime2, mtime2
 }
 
+func untilWritten(path string) {
+	time.Sleep(100 * time.Millisecond)
+	size := fileSize(path)
+	if size > 1024*20 {
+		for {
+			if isWritten, _ := isFileWritten(path); !isWritten {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
+
 func paths(baseDir string, ev watcher.Event) (string, string) {
 	relPath := strings.ReplaceAll(ev.Path, baseDir, "")
 	relOldPath := strings.ReplaceAll(ev.OldPath, baseDir, "")
@@ -56,11 +69,11 @@ type SafeSlice[T comparable] struct {
 	slice []T
 }
 
-func (s *SafeSlice[T]) Append(value T) {
+func (s *SafeSlice[T]) Append(values ...T) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.slice = append(s.slice, value)
+	s.slice = append(s.slice, values...)
 }
 
 func (s *SafeSlice[T]) Remove(value T) {
