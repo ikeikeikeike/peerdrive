@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bufio"
+	"context"
+	"encoding/binary"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"path"
@@ -8,10 +13,16 @@ import (
 	"time"
 
 	"github.com/k0kubun/pp"
+	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/samber/lo"
+
 	"github.com/radovskyb/watcher"
 )
 
-func syncer() {
+func syncWatcher(h host.Host) {
 	w := watcher.New()
 	watchCh := make(chan watcher.Event, 100)
 	finCh := make(chan string, 100)
@@ -87,12 +98,14 @@ func syncer() {
 			localPath := event.Path
 			remotePath := path.Join(remoteDir, relativePath)
 			if (event.Op == watcher.Move) || (event.Op == watcher.Rename) {
-				copyFile(localPath, remotePath)
-				deleteFile(path.Join(remoteDir, relativeOldPath))
+				copyFile(h, localPath, remotePath) // I/O
+
+				oldRemoteFilepath := path.Join(remoteDir, relativeOldPath)
+				deleteFile(h, oldRemoteFilepath) // I/O
 			} else if (event.Op == watcher.Create) || (event.Op == watcher.Write) {
-				copyFile(localPath, remotePath)
+				copyFile(h, localPath, remotePath) // I/O
 			} else if event.Op == watcher.Remove {
-				deleteFile(remotePath)
+				deleteFile(h, remotePath) // I/O
 			}
 
 			finCh <- event.Path
@@ -132,23 +145,86 @@ func isFileWritten(path string) (bool, int64) {
 	return mtime1 != mtime2, mtime2
 }
 
-func copyFile(localpath, remotepath string) {
+func copyFile(h host.Host, localpath, remotepath string) {
+	ctx := context.Background()
 	remotedir := path.Dir(remotepath)
 
 	// Create remote dir
-	pp.Printf("MkdirAll: %s\n", remotedir)
-
+	writeStreams(ctx, h, syncProtocol, fmt.Sprintf("MkdirAll: %s", remotedir))
 	// Create destination file
-	pp.Printf("Create: %s\n", remotepath)
-
+	writeStreams(ctx, h, syncProtocol, fmt.Sprintf("Create: %s", remotepath))
 	// Create source file
-	pp.Printf("Open: %s\n", localpath)
-
+	writeStreams(ctx, h, syncProtocol, fmt.Sprintf("Open: %s", localpath))
 	// Copy source file to destination file
-	pp.Printf("io.Copy: dstFile, srcFile\n")
+	writeStreams(ctx, h, syncProtocol, fmt.Sprintf("io.Copy: dstFile, srcFile"))
 }
 
-func deleteFile(remotepath string) {
+func deleteFile(h host.Host, remotepath string) {
+	ctx := context.Background()
+
 	// Delete file
-	pp.Printf("Remove: %s", remotepath)
+	writeStreams(ctx, h, syncProtocol, fmt.Sprintf("Remove: %s", remotepath))
+}
+
+func writeStreams(ctx context.Context, h host.Host, protocol protocol.ID, data string) error {
+	dupIDs := lo.Map(h.Network().Conns(), func(conn network.Conn, _ int) peer.ID {
+		return conn.RemotePeer()
+	})
+	for _, peerID := range lo.Uniq(dupIDs) {
+		if err := writeStream(ctx, h, protocol, peerID, data); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func writeStream(ctx context.Context, h host.Host, protocol protocol.ID, peerID peer.ID, data string) error {
+	stream, err := h.NewStream(ctx, peerID, protocol)
+	if err != nil {
+		return fmt.Errorf("Stream open failed %s: %w", peerID, err)
+	}
+	defer stream.Close()
+
+	packetSize := make([]byte, 4)
+	binary.BigEndian.PutUint32(packetSize, uint32(len(data)))
+
+	writer := bufio.NewWriter(stream)
+	if _, err := writer.Write(packetSize); err != nil {
+		return fmt.Errorf("Error sending message length %s: %w", peerID, err)
+	}
+	if _, err := writer.WriteString(data); err != nil {
+		return fmt.Errorf("Error sending message %s: %w", peerID, err)
+	}
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("Error flushing writer %s: %w", peerID, err)
+	}
+
+	return nil
+}
+
+func syncHandler() func(stream network.Stream) {
+	return func(stream network.Stream) {
+		defer stream.Close()
+		peerID := stream.Conn().RemotePeer()
+
+		for {
+			packetSize := make([]byte, 4)
+
+			if _, err := io.ReadFull(stream, packetSize); err != nil {
+				if err != io.EOF {
+					log.Printf("Error reading length from stream %s: %v", peerID, err)
+				}
+				return
+			}
+
+			data := make([]byte, binary.BigEndian.Uint32(packetSize))
+			if _, err := io.ReadFull(stream, data); err != nil {
+				log.Printf("Error reading message from stream %s: %v", peerID, err)
+				return
+			}
+
+			pp.Printf("Read: %s\n", string(data))
+		}
+	}
 }
