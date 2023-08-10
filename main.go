@@ -3,11 +3,12 @@ package main
 import (
 	"fmt"
 	"log"
+
+	"github.com/ikeikeikeike/peerdrive/p2p"
+	"github.com/ikeikeikeike/peerdrive/sync"
 )
 
 func main() {
-	// ctx := context.Background()
-
 	// Arguments
 	args, err := parseArgs()
 	if err != nil {
@@ -15,14 +16,14 @@ func main() {
 	}
 
 	// P2P Host
-	h, err := newP2P(args.Port)
+	h, err := p2p.NewP2P(args.Port)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer h.Close()
 
 	// For local-network
-	dMDNS, err := newMDNS(h, args.Rendezvous)
+	dMDNS, err := p2p.NewMDNS(h, args.Rendezvous)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -34,12 +35,12 @@ func main() {
 	fmt.Printf("Peer: %s\n", h.ID())
 
 	// Discover
-	go dMDNS.run( /*args.Network*/ )
+	go dMDNS.Run( /*args.Network*/ )
 	// go dDHT.run(args.Network)
 
 	// Packet
-	h.SetStreamHandler(syncProtocol, syncHandler())
+	h.SetStreamHandler(sync.SyncProtocol, sync.SyncHandler())
 
 	// synchornize
-	syncWatcher(h)
+	sync.SyncWatcher(h)
 }

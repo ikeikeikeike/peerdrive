@@ -1,4 +1,4 @@
-package main
+package p2p
 
 import (
 	"context"
@@ -14,9 +14,7 @@ import (
 	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 )
 
-const syncProtocol = "/peerdrive/1.0.0"
-
-func newP2P(port int) (host.Host, error) {
+func NewP2P(port int) (host.Host, error) {
 	pkey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
 	if err != nil {
 		return nil, err
@@ -53,7 +51,7 @@ func (n *discoveryMDNS) HandlePeerFound(pi peer.AddrInfo) {
 	n.PeerCh <- pi
 }
 
-func (n *discoveryMDNS) run( /*address string*/ ) {
+func (n *discoveryMDNS) Run( /*address string*/ ) {
 	for {
 		p := <-n.PeerCh
 		if p.ID == n.host.ID() {
@@ -75,7 +73,7 @@ func (n *discoveryMDNS) run( /*address string*/ ) {
 	}
 }
 
-func newMDNS(h host.Host, rendezvous string) (*discoveryMDNS, error) {
+func NewMDNS(h host.Host, rendezvous string) (*discoveryMDNS, error) {
 	n := &discoveryMDNS{
 		host:   h,
 		PeerCh: make(chan peer.AddrInfo),
