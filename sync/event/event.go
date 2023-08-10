@@ -30,6 +30,7 @@ type Event struct {
 	Op
 	Path string
 	Data []byte
+	// PeerID peer.ID
 }
 
 func (ev *Event) Copy() error {
