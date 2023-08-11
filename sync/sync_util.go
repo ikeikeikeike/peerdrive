@@ -91,7 +91,7 @@ func (s *SafeSlice[T]) Remove(value T) {
 	}
 }
 
-func (s *SafeSlice[T]) Get() []T {
+func (s *SafeSlice[T]) Copy() []T {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
