@@ -9,6 +9,7 @@ import (
 type args struct {
 	Rendezvous string
 	Port       int
+	SyncDir    string
 }
 
 func parseArgs() (*args, error) {
@@ -16,6 +17,7 @@ func parseArgs() (*args, error) {
 
 	flag.StringVar(&a.Rendezvous, "rv", "", "Rendezvous string like the only master key")
 	flag.IntVar(&a.Port, "port", 6868, "vpn-mesh port")
+	flag.StringVar(&a.SyncDir, "syncdir", "./", "Synchornize directory")
 
 	flag.Parse()
 

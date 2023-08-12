@@ -11,15 +11,18 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	"github.com/libp2p/go-libp2p/p2p/discovery/util"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 
 	"github.com/multiformats/go-multiaddr"
+	"github.com/samber/lo"
+)
+
+var (
+	Peers = []peer.ID{}
 )
 
 func NewP2P(port int) (host.Host, error) {
@@ -59,25 +62,19 @@ func (n *discoveryMDNS) HandlePeerFound(pi peer.AddrInfo) {
 	n.PeerCh <- pi
 }
 
-func (n *discoveryMDNS) Run( /*address string*/ ) {
+func (n *discoveryMDNS) Run() {
 	for {
 		p := <-n.PeerCh
 		if p.ID == n.host.ID() {
 			continue
 		}
-		ctx := context.Background()
-
-		if err := n.host.Connect(ctx, p); err != nil {
+		if err := n.host.Connect(context.Background(), p); err != nil {
 			// fmt.Println("MDNS Connection failed:", p.ID, ">>", err)
 			continue
 		}
-		fmt.Printf("Connect peer by MDNS: %s\n", p.ID)
 
-		// Can be written
-		// if err := discoveryWriter(ctx, n.host, address, p); err != nil {
-		// 	// fmt.Println("MDNS writer failed:", p.ID, ">>", err)
-		// 	continue
-		// }
+		fmt.Printf("Connect peer by MDNS: %s\n", p.ID)
+		Peers = lo.Uniq(append(Peers, p.ID))
 	}
 }
 
@@ -102,15 +99,13 @@ type discoveryDHT struct {
 }
 
 func (n *discoveryDHT) Run( /*address string*/ ) {
-	ticker := time.NewTicker(time.Second * 10)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		ctx := context.Background()
 
 		rd := routing.NewRoutingDiscovery(n.dht)
-		util.Advertise(ctx, rd, n.rendezvous)
-
 		peerCh, err := rd.FindPeers(ctx, n.rendezvous)
 		if err != nil {
 			fmt.Println("DHT FindPeers failed:", err)
@@ -121,20 +116,13 @@ func (n *discoveryDHT) Run( /*address string*/ ) {
 			if p.ID == n.host.ID() || len(p.Addrs) == 0 {
 				continue
 			}
-
-			switch n.host.Network().Connectedness(p.ID) {
-			// default:
-			// 	if err := discoveryWriter(ctx, n.host, address, p); err != nil {
-			// 		// fmt.Println("DHT writer failed:", p.ID, ">>", err)
-			// 		continue
-			// 	}
-			case network.NotConnected:
-				if err := n.host.Connect(ctx, p); err != nil {
-					// fmt.Println("DHT Connection failed:", p.ID, ">>", err)
-					continue
-				}
-				fmt.Printf("Connect peer by DHT: %s\n", p.ID)
+			if err := n.host.Connect(ctx, p); err != nil {
+				// fmt.Println("DHT Connection failed:", p.ID, ">>", err)
+				continue
 			}
+
+			fmt.Printf("Connect peer by DHT: %s\n", p.ID)
+			Peers = lo.Uniq(append(Peers, p.ID))
 		}
 	}
 }
@@ -170,13 +158,6 @@ func NewDHT(h host.Host, rendezvous string) (*discoveryDHT, error) {
 	if err = kadDHT.Bootstrap(ctx); err != nil {
 		return nil, err
 	}
-	// cid, err := cid.NewPrefixV1(cid.Raw, mh.IDENTITY).Sum([]byte(rendezvous))
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// if err := kadDHT.Provide(ctx, cid, true); err != nil {
-	// 	return nil, err
-	// }
 
 	ddht := &discoveryDHT{
 		host:       h,

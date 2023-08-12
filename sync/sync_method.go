@@ -10,12 +10,12 @@ import (
 	"io/ioutil"
 
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
 	"github.com/samber/lo"
 
+	"github.com/ikeikeikeike/peerdrive/p2p"
 	"github.com/ikeikeikeike/peerdrive/sync/event"
 )
 
@@ -35,10 +35,7 @@ func notifyDelete(h host.Host, relPath string) error {
 }
 
 func writeStreams(ctx context.Context, h host.Host, protocol protocol.ID, ev *event.Event) error {
-	dupIDs := lo.Map(h.Network().Conns(), func(conn network.Conn, _ int) peer.ID {
-		return conn.RemotePeer()
-	})
-	for _, peerID := range lo.Uniq(dupIDs) {
+	for _, peerID := range lo.Uniq(p2p.Peers) {
 		if err := writeStream(ctx, h, protocol, peerID, ev); err != nil {
 			return fmt.Errorf("%s write stream failed: %w", peerID, err)
 		}

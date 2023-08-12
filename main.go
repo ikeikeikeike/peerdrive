@@ -42,5 +42,5 @@ func main() {
 	h.SetStreamHandler(sync.SyncProtocol, sync.SyncHandler())
 
 	// synchornize
-	sync.SyncWatcher(h)
+	sync.SyncWatcher(h, args.SyncDir)
 }

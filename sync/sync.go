@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -67,11 +68,19 @@ func SyncHandler() func(stream network.Stream) {
 	}
 }
 
-func SyncWatcher(h host.Host) {
-	w := watcher.New()
-	watchCh := make(chan watcher.Event, 100)
+func SyncWatcher(h host.Host, syncDir string) {
+	var (
+		w       = watcher.New()
+		watchCh = make(chan watcher.Event, 100)
+		err     error
+	)
 
-	currDir, err := os.Getwd()
+	if syncDir == "" {
+		if syncDir, err = os.Getwd(); err != nil {
+			log.Fatalln(err)
+		}
+	}
+	syncDir, err = filepath.Abs(syncDir)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -89,7 +98,7 @@ func SyncWatcher(h host.Host) {
 				if ev.IsDir() {
 					break
 				}
-				relPath, _ := paths(currDir, ev)
+				relPath, _ := paths(syncDir, ev)
 				if syncs.Contains(relPath) {
 					break
 				}
@@ -111,7 +120,7 @@ func SyncWatcher(h host.Host) {
 			ev := <-watchCh
 			untilWritten(ev.Path)
 
-			relPath, oldPath := paths(currDir, ev)
+			relPath, oldPath := paths(syncDir, ev)
 			syncs.Append(relPath)
 
 			switch ev.Op {
