@@ -7,8 +7,10 @@ import (
 	"sync"
 	"time"
 
+	ipfslite "github.com/hsanjuan/ipfs-lite"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p-kad-dht/dual"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -17,16 +19,47 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/util"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	"github.com/libp2p/go-libp2p/p2p/transport/websocket"
 
 	"github.com/multiformats/go-multiaddr"
 	"github.com/samber/lo"
 )
 
-var (
-	Peers = []peer.ID{}
-)
+type PeerList []peer.ID
 
-func NewP2P(port int) (host.Host, error) {
+func (pl *PeerList) AppendUnique(ids ...peer.ID) bool {
+	prevs := len(*pl)
+	*pl = lo.Uniq(append(*pl, ids...))
+	return prevs != len(*pl)
+}
+
+var Peers = PeerList{}
+
+func NewP2PByLite(ctx context.Context, port int) (host.Host, *dual.DHT, error) {
+	pkey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	maddrs := []multiaddr.Multiaddr{}
+	for _, s := range []string{
+		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
+		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic", port),
+		fmt.Sprintf("/ip6/::/tcp/%d", port),
+		fmt.Sprintf("/ip6/::/udp/%d/quic", port),
+	} {
+		ma, err := multiaddr.NewMultiaddr(s)
+		if err != nil {
+			return nil, nil, err
+		}
+		maddrs = append(maddrs, ma)
+	}
+
+	opts := append([]libp2p.Option{libp2p.FallbackDefaults}, ipfslite.Libp2pOptionsExtra...)
+	return ipfslite.SetupLibp2p(ctx, pkey, nil, maddrs, nil, opts...)
+}
+
+func NewP2P(ctx context.Context, port int) (host.Host, error) {
 	pkey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
 	if err != nil {
 		return nil, err
@@ -50,6 +83,7 @@ func NewP2P(port int) (host.Host, error) {
 		libp2p.DefaultMuxers,
 		libp2p.Transport(libp2pquic.NewTransport),
 		libp2p.Transport(tcp.NewTCPTransport),
+		libp2p.Transport(websocket.New),
 		libp2p.FallbackDefaults,
 	)
 }
@@ -73,8 +107,9 @@ func (n *discoveryMDNS) Run() {
 			// fmt.Println("MDNS Connection failed:", p.ID, ">>", err)
 			continue
 		}
-		// fmt.Printf("Connect peer by MDNS: %s\n", p.ID)
-		Peers = lo.Uniq(append(Peers, p.ID))
+		if Peers.AppendUnique(p.ID) {
+			fmt.Printf("Connect peer by MDNS: %s\n", p.ID)
+		}
 	}
 }
 
@@ -84,8 +119,7 @@ func NewMDNS(h host.Host, rendezvous string) (*discoveryMDNS, error) {
 		PeerCh: make(chan peer.AddrInfo),
 	}
 
-	ser := mdns.NewMdnsService(h, rendezvous, n)
-	if err := ser.Start(); err != nil {
+	if err := mdns.NewMdnsService(h, rendezvous, n).Start(); err != nil {
 		return nil, err
 	}
 
@@ -95,6 +129,38 @@ func NewMDNS(h host.Host, rendezvous string) (*discoveryMDNS, error) {
 type discoveryDHT struct {
 	dht        *dht.IpfsDHT
 	rendezvous string
+}
+
+func RunDHT(ddht *dual.DHT, rendezvous string) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	host := ddht.LAN.Host()
+	for range ticker.C {
+		ctx := context.Background()
+
+		rd := routing.NewRoutingDiscovery(ddht)
+		util.Advertise(ctx, rd, rendezvous)
+
+		peerCh, err := rd.FindPeers(ctx, rendezvous)
+		if err != nil {
+			fmt.Printf("DHT FindPeers failed: %+v\n", err)
+			continue
+		}
+
+		for p := range peerCh {
+			if p.ID == host.ID() || len(p.Addrs) == 0 {
+				continue
+			}
+			if err := host.Connect(ctx, p); err != nil {
+				// fmt.Println("DHT Connection failed:", p.ID, ">>", err)
+				continue
+			}
+			if Peers.AppendUnique(p.ID) {
+				fmt.Printf("Connect peer by DHT: %s\n", p.ID)
+			}
+		}
+	}
 }
 
 func (n *discoveryDHT) Run() {
@@ -110,7 +176,7 @@ func (n *discoveryDHT) Run() {
 
 		peerCh, err := rd.FindPeers(ctx, n.rendezvous)
 		if err != nil {
-			fmt.Println("DHT FindPeers failed:", err)
+			fmt.Printf("DHT FindPeers failed: %+v\n", err)
 			continue
 		}
 
@@ -122,8 +188,9 @@ func (n *discoveryDHT) Run() {
 				// fmt.Println("DHT Connection failed:", p.ID, ">>", err)
 				continue
 			}
-			// fmt.Printf("Connect peer by DHT: %s\n", p.ID)
-			Peers = lo.Uniq(append(Peers, p.ID))
+			if Peers.AppendUnique(p.ID) {
+				fmt.Printf("Connect peer by DHT: %s\n", p.ID)
+			}
 		}
 	}
 }
@@ -132,9 +199,8 @@ func (n *discoveryDHT) DHT() *dht.IpfsDHT {
 	return n.dht
 }
 
-func NewDHT(h host.Host, rendezvous string) (*discoveryDHT, error) {
-	ctx := context.Background()
-
+func NewDHT(ctx context.Context, h host.Host, rendezvous string) (*discoveryDHT, error) {
+	// dht.NamespacedValidator
 	kadDHT, err := dht.New(ctx, h)
 	if err != nil {
 		return nil, err
@@ -154,7 +220,7 @@ func NewDHT(h host.Host, rendezvous string) (*discoveryDHT, error) {
 		go func() {
 			defer wg.Done()
 			if err := h.Connect(ctx, *peerinfo); err != nil {
-				fmt.Printf("DHT Bootstrap Connection failed: %v\n", err)
+				fmt.Printf("DHT Bootstrap Connection failed: %+v\n", err)
 			}
 		}()
 	}

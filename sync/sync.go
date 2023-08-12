@@ -2,24 +2,24 @@ package sync
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"encoding/gob"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
-	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/ipfs/go-cid"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/multiformats/go-multihash"
 
 	"github.com/radovskyb/watcher"
 
 	"github.com/ikeikeikeike/peerdrive/sync/event"
-	"github.com/k0kubun/pp"
 )
 
 const SyncProtocol = "/peerdrive/1.0.0"
@@ -29,7 +29,7 @@ var (
 	recvs = &SafeSlice[string]{}
 )
 
-func SyncHandler(kd *dht.IpfsDHT) func(stream network.Stream) {
+func SyncHandler( /*kd *dht.IpfsDHT*/ ) func(stream network.Stream) {
 	return func(stream network.Stream) {
 		defer stream.Close()
 		peerID := stream.Conn().RemotePeer()
@@ -68,16 +68,16 @@ func SyncHandler(kd *dht.IpfsDHT) func(stream network.Stream) {
 				return
 			}
 
-			if runtime.GOOS != "darwin" {
-				pp.Println(kd.GetValue(context.Background(), ev.Path))
-			}
+			// if runtime.GOOS != "darwin" {
+			// 	pp.Println(kd.GetValue(context.Background(), mustCID("mydatakey")))
+			// }
 		}
 	}
 }
 
-func SyncWatcher(kd *dht.IpfsDHT, syncDir string) {
+func SyncWatcher(h host.Host, syncDir string) {
 	var (
-		h       = kd.Host()
+		// h       = kd.Host()
 		w       = watcher.New()
 		watchCh = make(chan watcher.Event, 100)
 		err     error
@@ -131,9 +131,10 @@ func SyncWatcher(kd *dht.IpfsDHT, syncDir string) {
 			relPath, oldPath := paths(syncDir, ev)
 			syncs.Append(relPath)
 
-			if runtime.GOOS == "darwin" {
-				logFatal(kd.PutValue(context.Background(), relPath, []byte(relPath)))
-			}
+			// if runtime.GOOS == "darwin" {
+			// 	logFatal(kd.PutValue(context.Background(), mustCID("mydatakey"), []byte(relPath)))
+			// 	fmt.Println("kd.PutValue", relPath)
+			// }
 
 			switch ev.Op {
 			case watcher.Move, watcher.Rename:
@@ -162,4 +163,9 @@ func SyncWatcher(kd *dht.IpfsDHT, syncDir string) {
 	if err := w.Start(time.Millisecond * 300); err != nil {
 		log.Fatalln(err)
 	}
+}
+
+func mustCID(data string) string {
+	hash, _ := multihash.Sum([]byte(data), multihash.SHA2_256, -1)
+	return fmt.Sprintf("/ipns/%s", cid.NewCidV1(cid.Raw, hash).String())
 }
