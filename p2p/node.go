@@ -14,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
+	"github.com/libp2p/go-libp2p/p2p/discovery/util"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 
@@ -72,8 +73,7 @@ func (n *discoveryMDNS) Run() {
 			// fmt.Println("MDNS Connection failed:", p.ID, ">>", err)
 			continue
 		}
-
-		fmt.Printf("Connect peer by MDNS: %s\n", p.ID)
+		// fmt.Printf("Connect peer by MDNS: %s\n", p.ID)
 		Peers = lo.Uniq(append(Peers, p.ID))
 	}
 }
@@ -93,19 +93,21 @@ func NewMDNS(h host.Host, rendezvous string) (*discoveryMDNS, error) {
 }
 
 type discoveryDHT struct {
-	host       host.Host
 	dht        *dht.IpfsDHT
 	rendezvous string
 }
 
-func (n *discoveryDHT) Run( /*address string*/ ) {
+func (n *discoveryDHT) Run() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
+	host := n.dht.Host()
 	for range ticker.C {
 		ctx := context.Background()
 
 		rd := routing.NewRoutingDiscovery(n.dht)
+		util.Advertise(ctx, rd, n.rendezvous)
+
 		peerCh, err := rd.FindPeers(ctx, n.rendezvous)
 		if err != nil {
 			fmt.Println("DHT FindPeers failed:", err)
@@ -113,18 +115,21 @@ func (n *discoveryDHT) Run( /*address string*/ ) {
 		}
 
 		for p := range peerCh {
-			if p.ID == n.host.ID() || len(p.Addrs) == 0 {
+			if p.ID == host.ID() || len(p.Addrs) == 0 {
 				continue
 			}
-			if err := n.host.Connect(ctx, p); err != nil {
+			if err := host.Connect(ctx, p); err != nil {
 				// fmt.Println("DHT Connection failed:", p.ID, ">>", err)
 				continue
 			}
-
-			fmt.Printf("Connect peer by DHT: %s\n", p.ID)
+			// fmt.Printf("Connect peer by DHT: %s\n", p.ID)
 			Peers = lo.Uniq(append(Peers, p.ID))
 		}
 	}
+}
+
+func (n *discoveryDHT) DHT() *dht.IpfsDHT {
+	return n.dht
 }
 
 func NewDHT(h host.Host, rendezvous string) (*discoveryDHT, error) {
@@ -160,7 +165,6 @@ func NewDHT(h host.Host, rendezvous string) (*discoveryDHT, error) {
 	}
 
 	ddht := &discoveryDHT{
-		host:       h,
 		dht:        kadDHT,
 		rendezvous: rendezvous,
 	}

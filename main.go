@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/ikeikeikeike/peerdrive/p2p"
@@ -32,15 +31,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Peer: %s\n", h.ID())
+	// fmt.Printf("Peer: %s\n", h.ID())
 
 	// Discover
-	// go dMDNS.Run( /*args.Network*/ )
-	go dDHT.Run( /*args.Network*/ )
+	// go dMDNS.Run( )
+	go dDHT.Run()
 
 	// Packet
-	h.SetStreamHandler(sync.SyncProtocol, sync.SyncHandler())
+	h.SetStreamHandler(sync.SyncProtocol, sync.SyncHandler(dDHT.DHT()))
 
 	// synchornize
-	sync.SyncWatcher(h, args.SyncDir)
+	sync.SyncWatcher(dDHT.DHT(), args.SyncDir)
 }
