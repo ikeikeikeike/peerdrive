@@ -58,7 +58,6 @@ func SyncHandler() func(stream network.Stream) {
 				err = ev.Delete()
 				recvDispDeleted(ev.Path)
 			}
-			untilWritten(ev.Path)
 			time.AfterFunc(time.Second, func() { recvs.Remove(ev.Path) })
 			if err != nil {
 				log.Printf("%s error operate message from stream: %+v", peerID, err)
@@ -98,7 +97,6 @@ func SyncWatcher(h host.Host) {
 					break
 				}
 
-				syncs.Append(relPath)
 				watchCh <- ev
 			case err := <-w.Error:
 				log.Fatalln(err)
@@ -114,6 +112,8 @@ func SyncWatcher(h host.Host) {
 			untilWritten(ev.Path)
 
 			relPath, oldPath := paths(currDir, ev)
+			syncs.Append(relPath)
+
 			switch ev.Op {
 			case watcher.Move, watcher.Rename:
 				logFatal(notifyCopy(h, ev.Path, relPath))

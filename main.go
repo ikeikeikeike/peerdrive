@@ -23,20 +23,20 @@ func main() {
 	defer h.Close()
 
 	// For local-network
-	dMDNS, err := p2p.NewMDNS(h, args.Rendezvous)
-	if err != nil {
-		log.Fatal(err)
-	}
-	// For global-network
-	// dDHT, err := newDHT(ctx, h, args.Rendezvous)
+	// dMDNS, err := p2p.NewMDNS(h, args.Rendezvous)
 	// if err != nil {
 	// 	log.Fatal(err)
 	// }
+	// For global-network
+	dDHT, err := p2p.NewDHT(h, args.Rendezvous)
+	if err != nil {
+		log.Fatal(err)
+	}
 	fmt.Printf("Peer: %s\n", h.ID())
 
 	// Discover
-	go dMDNS.Run( /*args.Network*/ )
-	// go dDHT.run(args.Network)
+	// go dMDNS.Run( /*args.Network*/ )
+	go dDHT.Run( /*args.Network*/ )
 
 	// Packet
 	h.SetStreamHandler(sync.SyncProtocol, sync.SyncHandler())
