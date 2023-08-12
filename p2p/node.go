@@ -55,8 +55,45 @@ func NewP2PByLite(ctx context.Context, port int) (host.Host, *dual.DHT, error) {
 		maddrs = append(maddrs, ma)
 	}
 
-	opts := append([]libp2p.Option{libp2p.FallbackDefaults}, ipfslite.Libp2pOptionsExtra...)
-	return ipfslite.SetupLibp2p(ctx, pkey, nil, maddrs, nil, opts...)
+	opts := append([]libp2p.Option{}, ipfslite.Libp2pOptionsExtra...)
+	opts = append(opts, []libp2p.Option{
+		// libp2p.EnableAutoRelay(),
+		libp2p.DefaultSecurity,
+		libp2p.DefaultMuxers,
+		libp2p.FallbackDefaults,
+	}...)
+
+	h, dd, err := ipfslite.SetupLibp2p(ctx, pkey, nil, maddrs, nil, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	maddr, err := multiaddr.NewMultiaddr(
+		"/ip4/104.131.131.82/udp/4001/quic/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	boots := append(dht.DefaultBootstrapPeers, maddr)
+
+	var wg sync.WaitGroup
+	for _, pa := range boots {
+		peerinfo, _ := peer.AddrInfoFromP2pAddr(pa)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := h.Connect(ctx, *peerinfo); err != nil {
+				fmt.Printf("DHT Bootstrap Connection failed: %+v\n", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if err = dd.Bootstrap(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	return h, dd, nil
 }
 
 func NewP2P(ctx context.Context, port int) (host.Host, error) {
