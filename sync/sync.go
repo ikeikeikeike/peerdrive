@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/gob"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -157,7 +158,7 @@ func SyncWatcher(nd *p2p.Node, syncDir string) {
 	if err := w.AddRecursive("./"); err != nil {
 		log.Fatalln(err)
 	}
-	if err := w.Ignore(".git", ".snapshot"); err != nil {
+	if err := w.Ignore(".git", fmt.Sprintf(".%s", p2p.DSName)); err != nil {
 		log.Fatalln(err)
 	}
 	if err := w.Start(time.Millisecond * 300); err != nil {

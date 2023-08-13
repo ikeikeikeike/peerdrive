@@ -29,18 +29,8 @@ import (
 	"github.com/samber/lo"
 )
 
-type PeerList []peer.ID
-
-func (pl *PeerList) AppendUnique(ids ...peer.ID) bool {
-	prevs := len(*pl)
-	*pl = lo.Uniq(append(*pl, ids...))
-	return prevs != len(*pl)
-}
-
-var Peers = PeerList{}
-
 var (
-	defaultBootstrapPeers     []multiaddr.Multiaddr = dht.DefaultBootstrapPeers
+	defaultBootstrapPeers     = dht.DefaultBootstrapPeers
 	defaultBootstrapPeersInfo []peer.AddrInfo
 )
 
@@ -53,12 +43,26 @@ func init() {
 	}
 	defaultBootstrapPeers = append(defaultBootstrapPeers, maddr)
 
-	peers, err := peer.AddrInfosFromP2pAddrs(defaultBootstrapPeers...)
+	infos, err := peer.AddrInfosFromP2pAddrs(defaultBootstrapPeers...)
 	if err != nil {
 		panic(err)
 	}
-	defaultBootstrapPeersInfo = peers
+	defaultBootstrapPeersInfo = infos
 }
+
+type PeerList []peer.ID
+
+func (pl *PeerList) AppendUnique(ids ...peer.ID) bool {
+	prevs := len(*pl)
+	*pl = lo.Uniq(append(*pl, ids...))
+	return prevs != len(*pl)
+}
+
+var Peers = PeerList{}
+
+const (
+	DSName = "snap"
+)
 
 type Node struct {
 	Host       host.Host
@@ -109,7 +113,7 @@ func NewNodeByLite(ctx context.Context, port int, rendezvous string) (*Node, err
 		return nil, err
 	}
 
-	badgerDS, err := badger.NewDatastore("./.snapshot", &badger.DefaultOptions)
+	badgerDS, err := badger.NewDatastore(fmt.Sprintf("./.%s", DSName), &badger.DefaultOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +142,7 @@ func NewNodeByLite(ctx context.Context, port int, rendezvous string) (*Node, err
 	crdtOpts.DeleteHook = func(k datastore.Key) {
 		fmt.Printf("Removed: [%s]\n", k)
 	}
-	crdtDS, err := crdt.New(badgerDS, datastore.NewKey(rendezvous), ipfs, bcast, crdtOpts)
+	crdtDS, err := crdt.New(badgerDS, datastore.NewKey(DSName), ipfs, bcast, crdtOpts)
 	if err != nil {
 		return nil, err
 	}
