@@ -39,7 +39,7 @@ func (ev *Event) Copy() error {
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("%s error mkdirAll %s: %w", ev.String(), dir, err)
 	}
-	// create peer's file
+	// Create peer's file
 	f, err := os.Create(ev.Path)
 	if err != nil {
 		log.Fatal(err)

@@ -4,53 +4,213 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"sync"
+	"log"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p-kad-dht/dual"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
-	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	"github.com/libp2p/go-libp2p/p2p/discovery/util"
+
+	dht "github.com/libp2p/go-libp2p-kad-dht"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+
+	ipfslite "github.com/hsanjuan/ipfs-lite"
+	"github.com/ipfs/go-datastore"
+	badger "github.com/ipfs/go-ds-badger"
+	crdt "github.com/ipfs/go-ds-crdt"
 
 	"github.com/multiformats/go-multiaddr"
 	"github.com/samber/lo"
 )
 
+type PeerList []peer.ID
+
+func (pl *PeerList) AppendUnique(ids ...peer.ID) bool {
+	prevs := len(*pl)
+	*pl = lo.Uniq(append(*pl, ids...))
+	return prevs != len(*pl)
+}
+
+var Peers = PeerList{}
+
 var (
-	Peers = []peer.ID{}
+	defaultBootstrapPeers     []multiaddr.Multiaddr = dht.DefaultBootstrapPeers
+	defaultBootstrapPeersInfo []peer.AddrInfo
 )
 
-func NewP2P(port int) (host.Host, error) {
+func init() {
+	maddr, err := multiaddr.NewMultiaddr(
+		"/ip4/104.131.131.82/udp/4001/quic/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+	)
+	if err != nil {
+		panic(err)
+	}
+	defaultBootstrapPeers = append(defaultBootstrapPeers, maddr)
+
+	peers, err := peer.AddrInfosFromP2pAddrs(defaultBootstrapPeers...)
+	if err != nil {
+		panic(err)
+	}
+	defaultBootstrapPeersInfo = peers
+}
+
+type Node struct {
+	Host       host.Host
+	IPFS       *ipfslite.Peer
+	DHT        *dual.DHT       // routing.Routing
+	DS         *crdt.Datastore // datastore.Batching
+	Rendezvous string
+}
+
+func (n *Node) Close() error {
+	return multierror.Append(
+		n.Host.Close(),
+		n.DHT.Close(),
+		n.DS.Close(),
+	)
+}
+
+// Default Behavior: https://pkg.go.dev/github.com/libp2p/go-libp2p#New
+func NewNodeByLite(ctx context.Context, port int, rendezvous string) (*Node, error) {
 	pkey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
 	if err != nil {
 		return nil, err
 	}
 
-	addrs := libp2p.ListenAddrStrings(
+	maddrs := []multiaddr.Multiaddr{}
+	for _, s := range []string{
 		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
 		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic", port),
 		fmt.Sprintf("/ip6/::/tcp/%d", port),
 		fmt.Sprintf("/ip6/::/udp/%d/quic", port),
-	)
+	} {
+		ma, err := multiaddr.NewMultiaddr(s)
+		if err != nil {
+			return nil, err
+		}
+		maddrs = append(maddrs, ma)
+	}
 
-	// Default Behavior: https://pkg.go.dev/github.com/libp2p/go-libp2p#New
-	return libp2p.New(
-		addrs,
-		libp2p.Identity(pkey),
+	p2pOpts := append([]libp2p.Option{}, ipfslite.Libp2pOptionsExtra...)
+	p2pOpts = append(p2pOpts, []libp2p.Option{
 		// libp2p.EnableAutoRelay(),
-		libp2p.EnableNATService(),
 		libp2p.DefaultSecurity,
-		libp2p.NATPortMap(),
 		libp2p.DefaultMuxers,
-		libp2p.Transport(libp2pquic.NewTransport),
-		libp2p.Transport(tcp.NewTCPTransport),
 		libp2p.FallbackDefaults,
-	)
+	}...)
+	h, dht, err := ipfslite.SetupLibp2p(ctx, pkey, nil, maddrs, nil, p2pOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	badgerDS, err := badger.NewDatastore("./.snapshot", &badger.DefaultOptions)
+	if err != nil {
+		return nil, err
+	}
+	ipfs, err := ipfslite.New(ctx, badgerDS, nil, h, dht, nil)
+	if err != nil {
+		return nil, err
+	}
+	ipfs.Bootstrap(defaultBootstrapPeersInfo)
+
+	psub, err := pubsub.NewGossipSub(ctx, h)
+	if err != nil {
+		return nil, err
+	}
+	bcast, err := crdt.NewPubSubBroadcaster(ctx, psub, rendezvous)
+	if err != nil {
+		return nil, err
+	}
+	// more setups
+	// DAGService
+	// dags := ...
+	crdtOpts := crdt.DefaultOptions()
+	crdtOpts.RebroadcastInterval = 5 * time.Second
+	crdtOpts.PutHook = func(k datastore.Key, v []byte) {
+		fmt.Printf("Added: [%s] -> %s\n", k, string(v))
+	}
+	crdtOpts.DeleteHook = func(k datastore.Key) {
+		fmt.Printf("Removed: [%s]\n", k)
+	}
+	crdtDS, err := crdt.New(badgerDS, datastore.NewKey(rendezvous), ipfs, bcast, crdtOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	n := &Node{Host: h, DHT: dht, DS: crdtDS, IPFS: ipfs, Rendezvous: rendezvous}
+	go n.run(psub)
+	return n, nil
+}
+
+func (nd *Node) run(psub *pubsub.PubSub) {
+	topic, err := psub.Join(fmt.Sprintf("%s-net", nd.Rendezvous))
+	if err != nil {
+		log.Fatalln(err)
+	}
+	netSubs, err := topic.Subscribe()
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	// Use a special pubsub topic to avoid disconnecting
+	// from globaldb peers.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for {
+			msg, err := netSubs.Next(ctx)
+			if err != nil {
+				fmt.Println(err)
+				break
+			}
+			nd.Host.ConnManager().TagPeer(msg.ReceivedFrom, "keep", 100)
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				topic.Publish(ctx, []byte("hi!"))
+				time.Sleep(20 * time.Second)
+			}
+		}
+	}()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		ctx := context.Background()
+
+		rd := routing.NewRoutingDiscovery(nd.DHT)
+		util.Advertise(ctx, rd, nd.Rendezvous)
+
+		peerCh, err := rd.FindPeers(ctx, nd.Rendezvous)
+		if err != nil {
+			fmt.Printf("DHT FindPeers failed: %+v\n", err)
+			continue
+		}
+
+		for p := range peerCh {
+			if p.ID == nd.Host.ID() || len(p.Addrs) == 0 {
+				continue
+			}
+			if err := nd.Host.Connect(ctx, p); err != nil {
+				// fmt.Println("DHT Connection failed:", p.ID, ">>", err)
+				continue
+			}
+			if Peers.AppendUnique(p.ID) {
+				fmt.Printf("Connect peer by DHT: %s\n", p.ID)
+			}
+		}
+	}
 }
 
 type discoveryMDNS struct {
@@ -72,9 +232,9 @@ func (n *discoveryMDNS) Run() {
 			// fmt.Println("MDNS Connection failed:", p.ID, ">>", err)
 			continue
 		}
-
-		fmt.Printf("Connect peer by MDNS: %s\n", p.ID)
-		Peers = lo.Uniq(append(Peers, p.ID))
+		if Peers.AppendUnique(p.ID) {
+			fmt.Printf("Connect peer by MDNS: %s\n", p.ID)
+		}
 	}
 }
 
@@ -84,85 +244,9 @@ func NewMDNS(h host.Host, rendezvous string) (*discoveryMDNS, error) {
 		PeerCh: make(chan peer.AddrInfo),
 	}
 
-	ser := mdns.NewMdnsService(h, rendezvous, n)
-	if err := ser.Start(); err != nil {
+	if err := mdns.NewMdnsService(h, rendezvous, n).Start(); err != nil {
 		return nil, err
 	}
 
 	return n, nil
-}
-
-type discoveryDHT struct {
-	host       host.Host
-	dht        *dht.IpfsDHT
-	rendezvous string
-}
-
-func (n *discoveryDHT) Run( /*address string*/ ) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		ctx := context.Background()
-
-		rd := routing.NewRoutingDiscovery(n.dht)
-		peerCh, err := rd.FindPeers(ctx, n.rendezvous)
-		if err != nil {
-			fmt.Println("DHT FindPeers failed:", err)
-			continue
-		}
-
-		for p := range peerCh {
-			if p.ID == n.host.ID() || len(p.Addrs) == 0 {
-				continue
-			}
-			if err := n.host.Connect(ctx, p); err != nil {
-				// fmt.Println("DHT Connection failed:", p.ID, ">>", err)
-				continue
-			}
-
-			fmt.Printf("Connect peer by DHT: %s\n", p.ID)
-			Peers = lo.Uniq(append(Peers, p.ID))
-		}
-	}
-}
-
-func NewDHT(h host.Host, rendezvous string) (*discoveryDHT, error) {
-	ctx := context.Background()
-
-	kadDHT, err := dht.New(ctx, h)
-	if err != nil {
-		return nil, err
-	}
-	maddr, err := multiaddr.NewMultiaddr(
-		"/ip4/104.131.131.82/udp/4001/quic/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
-	)
-	if err != nil {
-		return nil, err
-	}
-	boots := append(dht.DefaultBootstrapPeers, maddr)
-
-	var wg sync.WaitGroup
-	for _, pa := range boots {
-		peerinfo, _ := peer.AddrInfoFromP2pAddr(pa)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := h.Connect(ctx, *peerinfo); err != nil {
-				fmt.Printf("DHT Bootstrap Connection failed: %v\n", err)
-			}
-		}()
-	}
-	wg.Wait()
-
-	if err = kadDHT.Bootstrap(ctx); err != nil {
-		return nil, err
-	}
-
-	ddht := &discoveryDHT{
-		host:       h,
-		dht:        kadDHT,
-		rendezvous: rendezvous,
-	}
-	return ddht, nil
 }

@@ -18,7 +18,7 @@ func logFatal(err error) {
 		return
 	}
 
-	log.Fatalln(err)
+	log.Printf("logFatal: %+v\n", err) // log.Fatalln(err)
 }
 
 func fileSize(name string) int64 {

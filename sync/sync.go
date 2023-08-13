@@ -2,20 +2,24 @@ package sync
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/gob"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/ipfs/go-datastore"
+	"github.com/k0kubun/pp"
 	"github.com/libp2p/go-libp2p/core/network"
 
 	"github.com/radovskyb/watcher"
 
+	"github.com/ikeikeikeike/peerdrive/p2p"
 	"github.com/ikeikeikeike/peerdrive/sync/event"
 )
 
@@ -26,7 +30,7 @@ var (
 	recvs = &SafeSlice[string]{}
 )
 
-func SyncHandler() func(stream network.Stream) {
+func SyncHandler(nd *p2p.Node) func(stream network.Stream) {
 	return func(stream network.Stream) {
 		defer stream.Close()
 		peerID := stream.Conn().RemotePeer()
@@ -64,12 +68,17 @@ func SyncHandler() func(stream network.Stream) {
 				log.Printf("%s error operate message from stream: %+v", peerID, err)
 				return
 			}
+
+			if runtime.GOOS != "darwin" {
+				pp.Println(nd.DS.Get(context.Background(), datastore.NewKey("mydatakey")))
+			}
 		}
 	}
 }
 
-func SyncWatcher(h host.Host, syncDir string) {
+func SyncWatcher(nd *p2p.Node, syncDir string) {
 	var (
+		h       = nd.Host
 		w       = watcher.New()
 		watchCh = make(chan watcher.Event, 100)
 		err     error
@@ -123,6 +132,10 @@ func SyncWatcher(h host.Host, syncDir string) {
 			relPath, oldPath := paths(syncDir, ev)
 			syncs.Append(relPath)
 
+			if runtime.GOOS == "darwin" {
+				logFatal(nd.DS.Put(context.Background(), datastore.NewKey("mydatakey"), []byte("value 1")))
+			}
+
 			switch ev.Op {
 			case watcher.Move, watcher.Rename:
 				logFatal(notifyCopy(h, ev.Path, relPath))
@@ -144,7 +157,7 @@ func SyncWatcher(h host.Host, syncDir string) {
 	if err := w.AddRecursive("./"); err != nil {
 		log.Fatalln(err)
 	}
-	if err := w.Ignore(".git"); err != nil {
+	if err := w.Ignore(".git", ".snapshot"); err != nil {
 		log.Fatalln(err)
 	}
 	if err := w.Start(time.Millisecond * 300); err != nil {
